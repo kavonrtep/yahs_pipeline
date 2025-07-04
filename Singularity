@@ -43,6 +43,21 @@ EOF
     # Download Juicer Tools
     wget -O /usr/local/bin/juicer_tools.jar \
         https://hicfiles.tc4ga.com/public/juicer/juicer_tools.1.9.9_jcuda.0.8.jar
+    
+    # Create juicer wrapper script for 'juicer pre' command
+    cat > /usr/local/bin/juicer << 'EOF'
+#!/bin/bash
+# Juicer wrapper script
+if [ "$1" = "pre" ]; then
+    shift
+    java -jar /usr/local/bin/juicer_tools.jar pre "$@"
+else
+    echo "Usage: juicer pre [options]"
+    echo "This is a wrapper for Juicer Tools pre command"
+    exit 1
+fi
+EOF
+    chmod +x /usr/local/bin/juicer
 
     # Install Miniconda
     wget -O /tmp/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
@@ -85,6 +100,7 @@ EOF
     echo -n "YaHS: " && yahs --version || echo "YaHS installed"
     echo -n "Java: " && java -version 2>&1 | head -n1
     echo -n "JuicerTools: " && java -jar /usr/local/bin/juicer_tools.jar 2>&1 | head -n1
+    echo -n "Juicer pre: " && juicer pre 2>&1 | head -n1
     echo -n "PretextMap: " && PretextMap --help | head -n1
     echo -n "PretextSnapshot: " && PretextSnapshot --help | head -n1
     echo -n "Conda: " && conda --version

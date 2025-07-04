@@ -15,6 +15,7 @@ output:
 parameters:
   threads: 16                              # Number of threads for BWA alignment
   java_memory: "32G"                       # Memory for Java applications
+  sort_memory: "32G"                       # Memory for sorting during contact map generation
 
   # Duplicate marking method: 'biobambam2' or 'picard'
   dedup_method: "biobambam2"
@@ -45,7 +46,7 @@ parameters:
 
 # Logging configuration
 logging:
-  level: "INFO"                            # DEBUG, INFO, WARNING, ERROR
+  level: "DEBUG"                           # DEBUG, INFO, WARNING, ERROR (DEBUG for troubleshooting)
   file: "yahs_workflow.log"                # Log file name
 
 # Example advanced configuration:

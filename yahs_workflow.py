@@ -34,6 +34,10 @@ class YaHSWorkflow:
         log_level = self.config.get('logging', {}).get('level', 'INFO')
         log_file = self.config.get('logging', {}).get('file', 'yahs_workflow.log')
 
+        # Force DEBUG level if we're troubleshooting contact maps
+        if log_level.upper() == 'INFO':
+            log_level = 'DEBUG'
+
         logging.basicConfig(
             level=getattr(logging, log_level.upper()),
             format='%(asctime)s - %(levelname)s - %(message)s',
@@ -229,50 +233,146 @@ class YaHSWorkflow:
         """Generate .hic file using Juicer Tools"""
         self.logger.info("Generating .hic file with Juicer Tools...")
 
-        # Look for YaHS output files for contact map generation
-        jbat_file = f"{self.output_prefix}.bin"
+        # Required files for Juicer .hic generation
+        bin_file = f"{self.output_prefix}.bin"
+        agp_file = f"{self.output_prefix}_scaffolds_final.agp"
+        contigs_fa = self.config['input']['contigs']
+        contigs_fai = f"{contigs_fa}.fai"
+        scaffold_fa = f"{self.output_prefix}_scaffolds_final.fa"
         hic_file = self.contact_maps_dir / f"{self.config['output'].get('prefix', 'scaffolded')}.hic"
-        chrom_sizes = f"{self.output_prefix}_scaffolds_final.fa.fai"
         
-        # Check if YaHS bin file exists (preferred for contact map generation)
-        if not os.path.exists(jbat_file):
-            self.logger.warning(f"YaHS bin file not found: {jbat_file}")
-            self.logger.info("Trying to use original BAM file for contact map generation...")
+        # Check if required files exist
+        if not os.path.exists(bin_file):
+            self.logger.error(f"YaHS bin file not found: {bin_file}")
+            self.logger.error("Cannot generate Juicer .hic file without YaHS bin file")
+            return
             
-            # Fallback to using the original BAM file
-            if not os.path.exists(self.hic_dedup_bam):
-                self.logger.error("Neither YaHS bin file nor dedup BAM file found")
-                self.logger.error("Cannot generate Juicer .hic file")
-                return
+        if not os.path.exists(agp_file):
+            self.logger.error(f"YaHS AGP file not found: {agp_file}")
+            self.logger.error("Cannot generate Juicer .hic file without AGP file")
+            return
             
-            # Convert BAM to format suitable for Juicer
-            temp_txt = self.contact_maps_dir / "temp_alignments.txt"
-            cmd = f"""samtools view {self.hic_dedup_bam} | awk 'BEGIN{{OFS="\\t"}} {{if ($2==99 || $2==163) {{print $1, 0, $3, $4, 0, $7, $8, 1}}}}' > {temp_txt}"""
-            self.run_command(cmd, "Convert BAM to Juicer format")
-            jbat_file = temp_txt
-        
-        # Check if chromosome sizes file exists
-        if not os.path.exists(chrom_sizes):
-            self.logger.warning(f"Chromosome sizes file not found: {chrom_sizes}")
-            # Try to create it from the final scaffold FASTA
-            scaffold_fa = f"{self.output_prefix}_scaffolds_final.fa"
-            if os.path.exists(scaffold_fa):
+        if not os.path.exists(contigs_fai):
+            self.logger.info(f"Creating contig index file: {contigs_fai}")
+            cmd = f"samtools faidx {contigs_fa}"
+            self.run_command(cmd, "Create contig index file")
+            
+        # Create chromosome sizes file for scaffolds
+        scaffold_sizes = f"{scaffold_fa}.chrom.sizes"
+        if not os.path.exists(scaffold_sizes):
+            self.logger.info("Creating scaffold chromosome sizes file...")
+            if not os.path.exists(f"{scaffold_fa}.fai"):
                 cmd = f"samtools faidx {scaffold_fa}"
-                self.run_command(cmd, "Create chromosome sizes file")
-                chrom_sizes = f"{scaffold_fa}.fai"
-            else:
-                self.logger.error("Cannot find final scaffold FASTA file")
-                return
+                self.run_command(cmd, "Create scaffold index file")
+            cmd = f"cut -f1,2 {scaffold_fa}.fai > {scaffold_sizes}"
+            self.run_command(cmd, "Create chromosome sizes file")
 
+        # Step 1: Convert YaHS bin file to Juicer format using juicer pre
+        alignments_file = self.contact_maps_dir / "alignments_sorted.txt"
+        alignments_raw = self.contact_maps_dir / "alignments_raw.txt"
+        threads = self.config['parameters'].get('threads', 8)
+        memory_sort = self.config['parameters'].get('sort_memory', '32G')
+        
+        self.logger.info("Converting YaHS bin file to Juicer format...")
+        self.logger.debug(f"Using bin file: {bin_file}")
+        self.logger.debug(f"Using AGP file: {agp_file}")
+        self.logger.debug(f"Using contig index: {contigs_fai}")
+        
+        # First try to run juicer pre without piping to see raw output
+        cmd = f"juicer pre {bin_file} {agp_file} {contigs_fai} > {alignments_raw}"
+        self.run_command(cmd, "Run juicer pre to generate raw alignments")
+        
+        # Check and debug the raw output
+        if os.path.exists(alignments_raw):
+            file_size = os.path.getsize(alignments_raw)
+            self.logger.info(f"Raw alignments file size: {file_size} bytes")
+            
+            # Read first few lines to debug format
+            with open(alignments_raw, 'r') as f:
+                lines = [f.readline().strip() for _ in range(10)]
+                self.logger.debug("First 10 lines of raw alignments:")
+                for i, line in enumerate(lines, 1):
+                    self.logger.debug(f"Line {i}: {line}")
+            
+            # Filter out status messages and keep only data lines
+            self.logger.info("Filtering and sorting alignment data...")
+            cmd = f"""grep -v "Writing\\|Skipping\\|Start\\|Not including" {alignments_raw} | \\
+                     grep -E "^[^\\s]" | \\
+                     sort -k2,2d -k6,6d -T {self.contact_maps_dir} --parallel={threads} -S{memory_sort} | \\
+                     awk 'NF' > {alignments_file}"""
+            
+            self.run_command(cmd, "Filter and sort alignment data")
+        else:
+            self.logger.error(f"Raw alignments file not created: {alignments_raw}")
+            return
+        
+        # Check if final alignments file was created and is not empty
+        if not os.path.exists(alignments_file):
+            self.logger.error("Failed to create alignments file")
+            return
+            
+        final_size = os.path.getsize(alignments_file)
+        self.logger.info(f"Final alignments file size: {final_size} bytes")
+        
+        if final_size == 0:
+            self.logger.error("Alignments file is empty after filtering")
+            self.logger.info("Falling back to BAM-based contact map generation...")
+            self.generate_juicer_from_bam()
+            return
+
+        # Step 2: Generate .hic file with Juicer Tools
         memory = self.config['parameters'].get('java_memory', '32G')
         juicer_jar = self.config['parameters'].get(
             'juicer_tools_jar', '/usr/local/bin/juicer_tools.jar'
             )
 
+        self.logger.info("Generating .hic file with Juicer Tools...")
         cmd = f"""java -Xmx{memory} -jar {juicer_jar} pre \\
-                 {jbat_file} {hic_file} {chrom_sizes}"""
+                 {alignments_file} {hic_file} {scaffold_sizes}"""
 
         self.run_command(cmd, "Generate .hic file with Juicer Tools")
+
+    def generate_juicer_from_bam(self):
+        """Fallback method: Generate .hic file directly from BAM file"""
+        self.logger.info("Generating .hic file from BAM file...")
+        
+        # Create Juicer-compatible alignment file from BAM
+        alignments_file = self.contact_maps_dir / "alignments_from_bam.txt"
+        scaffold_fa = f"{self.output_prefix}_scaffolds_final.fa"
+        scaffold_sizes = f"{scaffold_fa}.chrom.sizes"
+        hic_file = self.contact_maps_dir / f"{self.config['output'].get('prefix', 'scaffolded')}.hic"
+        
+        self.logger.info("Converting BAM to Juicer format...")
+        # Convert BAM to Juicer short format
+        cmd = f"""samtools view {self.hic_dedup_bam} | \\
+                 awk 'BEGIN{{OFS="\\t"}} \\
+                 {{ \\
+                     if (and($2,0x40)) strand1=0; else strand1=1; \\
+                     if (and($2,0x10)) strand1=1-strand1; \\
+                     if (and($2,0x20)) strand2=1; else strand2=0; \\
+                     if (and($2,0x80)) strand2=1-strand2; \\
+                     print $1, strand1, $3, $4, 1, strand2, $7, $8, 1, 1 \\
+                 }}' | \\
+                 sort -k3,3d -k7,7d -T {self.contact_maps_dir} > {alignments_file}"""
+        
+        self.run_command(cmd, "Convert BAM to Juicer format")
+        
+        # Check if alignments file was created
+        if not os.path.exists(alignments_file) or os.path.getsize(alignments_file) == 0:
+            self.logger.error("Failed to create alignments from BAM file")
+            return
+            
+        # Generate .hic file
+        memory = self.config['parameters'].get('java_memory', '32G')
+        juicer_jar = self.config['parameters'].get(
+            'juicer_tools_jar', '/usr/local/bin/juicer_tools.jar'
+            )
+
+        self.logger.info("Generating .hic file from BAM-derived alignments...")
+        cmd = f"""java -Xmx{memory} -jar {juicer_jar} pre \\
+                 {alignments_file} {hic_file} {scaffold_sizes}"""
+
+        self.run_command(cmd, "Generate .hic file from BAM alignments")
 
     def generate_pretext_maps(self):
         """Generate Pretext maps"""
