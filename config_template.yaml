@@ -1,0 +1,62 @@
+# YaHS Scaffolding Workflow Configuration
+
+# Input files (required)
+input:
+  contigs: "/path/to/contigs.fa"           # Assembly contigs FASTA file
+  hic_r1: "/path/to/hic_R1.fastq.gz"      # Hi-C reads forward
+  hic_r2: "/path/to/hic_R2.fastq.gz"      # Hi-C reads reverse
+
+# Output configuration
+output:
+  directory: "/path/to/output"             # Output directory
+  prefix: "scaffolded"                     # Output files prefix
+
+# Workflow parameters
+parameters:
+  threads: 16                              # Number of threads for BWA alignment
+  java_memory: "32G"                       # Memory for Java applications
+
+  # Duplicate marking method: 'biobambam2' or 'picard'
+  dedup_method: "biobambam2"
+
+  # Generate BED file from BAM (optional)
+  generate_bed: false
+
+  # Contact map generation: 'juicer', 'pretext', or 'both'
+  contact_map_method: "both"
+
+  # Path to Juicer Tools JAR (if using juicer contact maps)
+  juicer_tools_jar: "/usr/local/bin/juicer_tools.jar"
+
+  # YaHS specific parameters
+  yahs:
+    # Resolution series (comma-separated, e.g., "1000,5000,10000")
+    # resolution: "1000,5000,10000"
+
+    # Start from existing AGP file
+    # agp_file: "/path/to/existing.agp"
+
+    # Skip error correction rounds
+    no_contig_ec: false
+    no_scaffold_ec: false
+
+    # Restriction enzyme motifs (e.g., "GATC,GANTC")
+    # enzyme_motifs: "GATC"
+
+# Logging configuration
+logging:
+  level: "INFO"                            # DEBUG, INFO, WARNING, ERROR
+  file: "yahs_workflow.log"                # Log file name
+
+# Example advanced configuration:
+# parameters:
+#   threads: 32
+#   java_memory: "64G"
+#   dedup_method: "picard"
+#   generate_bed: true
+#   contact_map_method: "both"
+#   yahs:
+#     resolution: "1000,2000,5000,10000,20000,50000"
+#     enzyme_motifs: "GATC,GANTC"
+#     no_contig_ec: false
+#     no_scaffold_ec: false
