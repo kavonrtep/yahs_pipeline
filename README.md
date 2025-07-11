@@ -70,8 +70,18 @@ The pipeline uses a YAML configuration file. Here's an example:
 # Input files (required)
 input:
   contigs: "/path/to/contigs.fa"           # Assembly contigs FASTA file
-  hic_r1: "/path/to/hic_R1.fastq.gz"      # Hi-C reads forward
-  hic_r2: "/path/to/hic_R2.fastq.gz"      # Hi-C reads reverse
+  
+  # Hi-C reads - can specify single pair or multiple pairs
+  # Single pair format (for backwards compatibility):
+  # hic_r1: "/path/to/hic_R1.fastq.gz"
+  # hic_r2: "/path/to/hic_R2.fastq.gz"
+  
+  # Multiple pairs format (recommended for multiple Hi-C libraries):
+  hic_pairs:
+    - r1: "/path/to/library1_R1.fastq.gz"
+      r2: "/path/to/library1_R2.fastq.gz"
+    - r1: "/path/to/library2_R1.fastq.gz"
+      r2: "/path/to/library2_R2.fastq.gz"
 
 # Output configuration
 output:
@@ -97,6 +107,45 @@ logging:
   level: "INFO"                            # DEBUG, INFO, WARNING, ERROR
   file: "yahs_workflow.log"                # Log file name
 ```
+
+## Multiple Hi-C Libraries Support
+
+The pipeline supports processing multiple Hi-C libraries, which is beneficial for:
+
+- **Improved scaffolding quality**: Multiple libraries provide more contact information
+- **Different restriction enzymes**: Combining data from different Hi-C protocols
+- **Sequencing depth**: Merging multiple sequencing runs for better coverage
+
+### Configuration Formats
+
+**Single Hi-C Library (backwards compatible):**
+```yaml
+input:
+  contigs: "/path/to/contigs.fa"
+  hic_r1: "/path/to/hic_R1.fastq.gz"
+  hic_r2: "/path/to/hic_R2.fastq.gz"
+```
+
+**Multiple Hi-C Libraries (recommended):**
+```yaml
+input:
+  contigs: "/path/to/contigs.fa"
+  hic_pairs:
+    - r1: "/path/to/DpnII_R1.fastq.gz"
+      r2: "/path/to/DpnII_R2.fastq.gz"
+    - r1: "/path/to/HindIII_R1.fastq.gz"
+      r2: "/path/to/HindIII_R2.fastq.gz"
+    - r1: "/path/to/Arima_R1.fastq.gz"
+      r2: "/path/to/Arima_R2.fastq.gz"
+```
+
+### Processing Workflow
+
+When multiple Hi-C pairs are specified:
+1. Each pair is aligned independently using BWA
+2. All aligned BAM files are merged with proper name sorting
+3. Duplicate marking is performed on the merged dataset
+4. Scaffolding uses the combined Hi-C information
 
 ## Usage Examples
 

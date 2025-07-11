@@ -68,7 +68,7 @@ EOF
     export PATH="/opt/miniconda/bin:$PATH"
     /opt/miniconda/bin/conda config --add channels bioconda
     /opt/miniconda/bin/conda config --add channels conda-forge
-    /opt/miniconda/bin/conda install -y pretext-suite pyyaml
+    /opt/miniconda/bin/conda install -y pretext-suite pyyaml sambamba
 
     # Copy workflow script to container
     mkdir -p /opt/yahs-workflow
@@ -85,7 +85,7 @@ EOF
         echo "Usage: singularity run container.sif config.yaml"
         echo "       singularity exec container.sif yahs_workflow.py config.yaml"
         echo ""
-        echo "Available tools: yahs, bwa, samtools, bedtools, PretextMap, PretextSnapshot"
+        echo "Available tools: yahs, bwa, samtools, bedtools, sambamba, PretextMap, PretextSnapshot"
         echo "Template config: /opt/yahs-workflow/config_template.yaml"
         exit 1
     fi
@@ -97,6 +97,7 @@ EOF
     echo -n "samtools: " && samtools --version | head -n1
     echo -n "bedtools: " && bedtools --version | head -n1
     echo -n "biobambam2 bammarkduplicates2: " && bammarkduplicates2 --version || echo "OK"
+    echo -n "sambamba: " && sambamba --version 2>&1 | head -n1
     echo -n "YaHS: " && yahs --version || echo "YaHS installed"
     echo -n "Java: " && java -version 2>&1 | head -n1
     echo -n "JuicerTools: " && java -jar /usr/local/bin/juicer_tools.jar 2>&1 | head -n1

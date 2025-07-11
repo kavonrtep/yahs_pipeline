@@ -55,14 +55,44 @@ class YaHSWorkflow:
 
         # Check required input files
         input_config = self.config['input']
-        required_inputs = ['contigs', 'hic_r1', 'hic_r2']
-        for inp in required_inputs:
-            if inp not in input_config:
-                self.logger.error(f"Missing required input: {inp}")
+        
+        # Check contigs file
+        if 'contigs' not in input_config:
+            self.logger.error("Missing required input: contigs")
+            sys.exit(1)
+        if not os.path.exists(input_config['contigs']):
+            self.logger.error(f"Contigs file not found: {input_config['contigs']}")
+            sys.exit(1)
+        
+        # Check Hi-C files - support both single pair and multiple pairs format
+        if 'hic_pairs' in input_config:
+            # Multiple pairs format
+            if not isinstance(input_config['hic_pairs'], list) or len(input_config['hic_pairs']) == 0:
+                self.logger.error("hic_pairs must be a non-empty list")
                 sys.exit(1)
-            if not os.path.exists(input_config[inp]):
-                self.logger.error(f"Input file not found: {input_config[inp]}")
+            
+            for i, pair in enumerate(input_config['hic_pairs']):
+                if 'r1' not in pair or 'r2' not in pair:
+                    self.logger.error(f"Hi-C pair {i+1} missing r1 or r2 file")
+                    sys.exit(1)
+                if not os.path.exists(pair['r1']):
+                    self.logger.error(f"Hi-C R1 file not found: {pair['r1']}")
+                    sys.exit(1)
+                if not os.path.exists(pair['r2']):
+                    self.logger.error(f"Hi-C R2 file not found: {pair['r2']}")
+                    sys.exit(1)
+                    
+        elif 'hic_r1' in input_config and 'hic_r2' in input_config:
+            # Single pair format (backwards compatibility)
+            if not os.path.exists(input_config['hic_r1']):
+                self.logger.error(f"Hi-C R1 file not found: {input_config['hic_r1']}")
                 sys.exit(1)
+            if not os.path.exists(input_config['hic_r2']):
+                self.logger.error(f"Hi-C R2 file not found: {input_config['hic_r2']}")
+                sys.exit(1)
+        else:
+            self.logger.error("No Hi-C input files specified. Use either 'hic_pairs' or 'hic_r1'/'hic_r2' format")
+            sys.exit(1)
 
     def run_command(self, cmd, description):
         """Execute shell command with logging"""
@@ -106,12 +136,29 @@ class YaHSWorkflow:
         if os.path.exists(hic_dedup_check):
             self.logger.info("Preprocessing already completed, skipping step 1")
             self.hic_dedup_bam = hic_dedup_check
+            
+            # Still log information about Hi-C pairs for transparency
+            input_config = self.config['input']
+            if 'hic_pairs' in input_config:
+                self.logger.info(f"Configuration specifies {len(input_config['hic_pairs'])} Hi-C library pairs")
+            else:
+                self.logger.info("Configuration specifies single Hi-C library pair")
             return
 
         contigs_fa = self.config['input']['contigs']
-        hic_r1 = self.config['input']['hic_r1']
-        hic_r2 = self.config['input']['hic_r2']
         threads = self.config['parameters'].get('threads', 8)
+        input_config = self.config['input']
+        
+        # Prepare Hi-C file pairs
+        hic_pairs = []
+        if 'hic_pairs' in input_config:
+            # Multiple pairs format
+            hic_pairs = input_config['hic_pairs']
+            self.logger.info(f"Processing {len(hic_pairs)} Hi-C library pairs")
+        else:
+            # Single pair format (backwards compatibility)
+            hic_pairs = [{'r1': input_config['hic_r1'], 'r2': input_config['hic_r2']}]
+            self.logger.info("Processing single Hi-C library pair")
 
         # Index contigs
         self.logger.info("Indexing contigs...")
@@ -125,13 +172,38 @@ class YaHSWorkflow:
             cmd = f"bwa index {contigs_fa}"
             self.run_command(cmd, "Create BWA index for contigs")
 
-        # Align Hi-C reads
+        # Align Hi-C reads (potentially multiple pairs)
         self.logger.info("Aligning Hi-C reads...")
+        
+        aligned_bams = []
+        for i, pair in enumerate(hic_pairs):
+            pair_name = f"pair_{i+1:02d}"
+            self.logger.info(f"Processing Hi-C pair {i+1}/{len(hic_pairs)}: {pair['r1']}, {pair['r2']}")
+            
+            hic_aligned = self.preprocessing_dir / f"hic_{pair_name}_aligned.bam"
+            cmd = f"""bwa mem -t {threads} {contigs_fa} {pair['r1']} {pair['r2']} | \\
+                     samtools view -bSh - | \\
+                     samtools sort -n -O BAM -o {hic_aligned}"""
+            self.run_command(cmd, f"Align Hi-C pair {i+1} with BWA and sort by name")
+            aligned_bams.append(str(hic_aligned))
+        
+        # Merge multiple BAM files if necessary
         hic_name_sorted = self.preprocessing_dir / "hic_name_sorted.bam"
-        cmd = f"""bwa mem -t {threads} {contigs_fa} {hic_r1} {hic_r2} | \\
-                 samtools view -bSh - | \\
-                 samtools sort -n -O BAM -o {hic_name_sorted}"""
-        self.run_command(cmd, "Align Hi-C reads with BWA and sort by name")
+        if len(aligned_bams) == 1:
+            # Single pair - just rename
+            cmd = f"mv {aligned_bams[0]} {hic_name_sorted}"
+            self.run_command(cmd, "Rename single aligned BAM file")
+        else:
+            # Multiple pairs - merge them
+            self.logger.info(f"Merging {len(aligned_bams)} aligned BAM files...")
+            bam_list = " ".join(aligned_bams)
+            cmd = f"samtools merge -n {hic_name_sorted} {bam_list}"
+            self.run_command(cmd, "Merge multiple Hi-C aligned BAM files")
+            
+            # Clean up individual BAM files
+            for bam in aligned_bams:
+                cmd = f"rm {bam}"
+                self.run_command(cmd, f"Remove temporary BAM file {bam}")
 
         # Mark duplicates
         self.logger.info("Marking duplicates...")
@@ -146,6 +218,14 @@ class YaHSWorkflow:
             cmd = f"""java -jar picard.jar MarkDuplicates \\
                      I={hic_name_sorted} O={hic_dedup} M={metrics_file}"""
             self.run_command(cmd, "Mark duplicates with Picard")
+        elif dedup_method == 'sambamba':
+            threads = self.config['parameters'].get('threads', 8)
+            cmd = (f"sambamba markdup -t {threads} --show-progress {hic_name_sorted}"
+                   f" {hic_dedup}")
+            self.run_command(cmd, "Mark duplicates with sambamba")
+        else:
+            self.logger.error(f"Unknown dedup_method: {dedup_method}. Supported methods: biobambam2, picard, sambamba")
+            sys.exit(1)
 
         # Optional: Convert to BED
         if self.config['parameters'].get('generate_bed', False):
