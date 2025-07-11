@@ -172,38 +172,42 @@ class YaHSWorkflow:
             cmd = f"bwa index {contigs_fa}"
             self.run_command(cmd, "Create BWA index for contigs")
 
-        # Align Hi-C reads (potentially multiple pairs)
-        self.logger.info("Aligning Hi-C reads...")
-        
-        aligned_bams = []
-        for i, pair in enumerate(hic_pairs):
-            pair_name = f"pair_{i+1:02d}"
-            self.logger.info(f"Processing Hi-C pair {i+1}/{len(hic_pairs)}: {pair['r1']}, {pair['r2']}")
-            
-            hic_aligned = self.preprocessing_dir / f"hic_{pair_name}_aligned.bam"
-            cmd = f"""bwa mem -t {threads} {contigs_fa} {pair['r1']} {pair['r2']} | \\
-                     samtools view -bSh - | \\
-                     samtools sort -n -O BAM -o {hic_aligned}"""
-            self.run_command(cmd, f"Align Hi-C pair {i+1} with BWA and sort by name")
-            aligned_bams.append(str(hic_aligned))
-        
-        # Merge multiple BAM files if necessary
+        # Check if alignment is already completed by looking for the final merged/sorted file
         hic_name_sorted = self.preprocessing_dir / "hic_name_sorted.bam"
-        if len(aligned_bams) == 1:
-            # Single pair - just rename
-            cmd = f"mv {aligned_bams[0]} {hic_name_sorted}"
-            self.run_command(cmd, "Rename single aligned BAM file")
+        if os.path.exists(hic_name_sorted):
+            self.logger.info("BWA alignment already completed, skipping alignment step")
         else:
-            # Multiple pairs - merge them
-            self.logger.info(f"Merging {len(aligned_bams)} aligned BAM files...")
-            bam_list = " ".join(aligned_bams)
-            cmd = f"samtools merge -n {hic_name_sorted} {bam_list}"
-            self.run_command(cmd, "Merge multiple Hi-C aligned BAM files")
+            # Align Hi-C reads (potentially multiple pairs)
+            self.logger.info("Aligning Hi-C reads...")
             
-            # Clean up individual BAM files
-            for bam in aligned_bams:
-                cmd = f"rm {bam}"
-                self.run_command(cmd, f"Remove temporary BAM file {bam}")
+            aligned_bams = []
+            for i, pair in enumerate(hic_pairs):
+                pair_name = f"pair_{i+1:02d}"
+                self.logger.info(f"Processing Hi-C pair {i+1}/{len(hic_pairs)}: {pair['r1']}, {pair['r2']}")
+                
+                hic_aligned = self.preprocessing_dir / f"hic_{pair_name}_aligned.bam"
+                cmd = f"""bwa mem -t {threads} {contigs_fa} {pair['r1']} {pair['r2']} | \\
+                         samtools view -bSh - | \\
+                         samtools sort -n -O BAM -o {hic_aligned}"""
+                self.run_command(cmd, f"Align Hi-C pair {i+1} with BWA and sort by name")
+                aligned_bams.append(str(hic_aligned))
+            
+            # Merge multiple BAM files if necessary
+            if len(aligned_bams) == 1:
+                # Single pair - just rename
+                cmd = f"mv {aligned_bams[0]} {hic_name_sorted}"
+                self.run_command(cmd, "Rename single aligned BAM file")
+            else:
+                # Multiple pairs - merge them
+                self.logger.info(f"Merging {len(aligned_bams)} aligned BAM files...")
+                bam_list = " ".join(aligned_bams)
+                cmd = f"samtools merge -n {hic_name_sorted} {bam_list}"
+                self.run_command(cmd, "Merge multiple Hi-C aligned BAM files")
+                
+                # Clean up individual BAM files
+                for bam in aligned_bams:
+                    cmd = f"rm {bam}"
+                    self.run_command(cmd, f"Remove temporary BAM file {bam}")
 
         # Mark duplicates
         self.logger.info("Marking duplicates...")
