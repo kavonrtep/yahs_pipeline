@@ -258,7 +258,7 @@ class YaHSWorkflow:
             )
 
         # Build YaHS command with --make-bin for contact map generation
-        cmd_parts = ["yahs", f"-o {output_prefix}", "--make-bin", contigs_fa, str(self.hic_dedup_bam)]
+        cmd_parts = ["yahs", f"-o {output_prefix}", contigs_fa, str(self.hic_dedup_bam)]
 
         # Add optional parameters
         yahs_params = self.config['parameters'].get('yahs', {})
@@ -352,8 +352,8 @@ class YaHSWorkflow:
             self.run_command(cmd, "Create chromosome sizes file")
 
         # Step 1: Convert YaHS bin file to Juicer format using juicer pre
+        # Follow exact YaHS documentation command
         alignments_file = self.contact_maps_dir / "alignments_sorted.txt"
-        alignments_raw = self.contact_maps_dir / "alignments_raw.txt"
         threads = self.config['parameters'].get('threads', 8)
         memory_sort = self.config['parameters'].get('sort_memory', '32G')
         
@@ -362,33 +362,30 @@ class YaHSWorkflow:
         self.logger.debug(f"Using AGP file: {agp_file}")
         self.logger.debug(f"Using contig index: {contigs_fai}")
         
-        # First try to run juicer pre without piping to see raw output
-        cmd = f"juicer pre {bin_file} {agp_file} {contigs_fai} > {alignments_raw}"
-        self.run_command(cmd, "Run juicer pre to generate raw alignments")
+        # First backup the AGP file to prevent corruption
+        agp_backup = f"{agp_file}.backup"
+        cmd = f"cp {agp_file} {agp_backup}"
+        self.run_command(cmd, "Backup AGP file before juicer pre")
         
-        # Check and debug the raw output
-        if os.path.exists(alignments_raw):
-            file_size = os.path.getsize(alignments_raw)
-            self.logger.info(f"Raw alignments file size: {file_size} bytes")
-            
-            # Read first few lines to debug format
-            with open(alignments_raw, 'r') as f:
-                lines = [f.readline().strip() for _ in range(10)]
-                self.logger.debug("First 10 lines of raw alignments:")
-                for i, line in enumerate(lines, 1):
-                    self.logger.debug(f"Line {i}: {line}")
-            
-            # Filter out status messages and keep only data lines
-            self.logger.info("Filtering and sorting alignment data...")
-            cmd = f"""grep -v "Writing\\|Skipping\\|Start\\|Not including" {alignments_raw} | \\
-                     grep -E "^[^\\s]" | \\
-                     sort -k2,2d -k6,6d -T {self.contact_maps_dir} --parallel={threads} -S{memory_sort} | \\
-                     awk 'NF' > {alignments_file}"""
-            
-            self.run_command(cmd, "Filter and sort alignment data")
-        else:
-            self.logger.error(f"Raw alignments file not created: {alignments_raw}")
-            return
+        # Change to contact_maps directory to avoid any path issues
+        # Use exact command from YaHS documentation with proper working directory
+        alignments_temp = f"{alignments_file}.part"
+        cmd = f"""cd {self.contact_maps_dir} && \\
+                 (juicer pre {bin_file} {agp_file} {contigs_fai} | \\
+                 sort -k2,2d -k6,6d -T . --parallel={threads} -S{memory_sort} | \\
+                 awk 'NF' > {alignments_temp}) && \\
+                 (mv {alignments_temp} {alignments_file})"""
+        
+        self.run_command(cmd, "Convert YaHS bin to Juicer format and sort alignments")
+        
+        # Restore AGP file if it got corrupted
+        if os.path.exists(agp_backup):
+            agp_size = os.path.getsize(agp_file) if os.path.exists(agp_file) else 0
+            backup_size = os.path.getsize(agp_backup)
+            if agp_size != backup_size or agp_size < 1000:  # AGP file should be substantial
+                self.logger.warning("AGP file appears corrupted, restoring from backup")
+                cmd = f"cp {agp_backup} {agp_file}"
+                self.run_command(cmd, "Restore AGP file from backup")
         
         # Check if final alignments file was created and is not empty
         if not os.path.exists(alignments_file):
@@ -405,14 +402,17 @@ class YaHSWorkflow:
             return
 
         # Step 2: Generate .hic file with Juicer Tools
+        # Follow exact YaHS documentation command with atomic move
         memory = self.config['parameters'].get('java_memory', '32G')
         juicer_jar = self.config['parameters'].get(
             'juicer_tools_jar', '/usr/local/bin/juicer_tools.jar'
             )
 
         self.logger.info("Generating .hic file with Juicer Tools...")
-        cmd = f"""java -Xmx{memory} -jar {juicer_jar} pre \\
-                 {alignments_file} {hic_file} {scaffold_sizes}"""
+        hic_temp = f"{hic_file}.part"
+        cmd = f"""(java -jar -Xmx{memory} {juicer_jar} pre \\
+                 {alignments_file} {hic_temp} {scaffold_sizes}) && \\
+                 (mv {hic_temp} {hic_file})"""
 
         self.run_command(cmd, "Generate .hic file with Juicer Tools")
 
