@@ -2,33 +2,21 @@
 
 # Input files (required)
 input:
-  contigs: "/path/to/contigs.fa"           # Assembly contigs FASTA file
-  
-  # Hi-C reads - can specify single pair or multiple pairs
-  # Single pair format (for backwards compatibility):
-  # hic_r1: "/path/to/hic_R1.fastq.gz"
-  # hic_r2: "/path/to/hic_R2.fastq.gz"
-  
-  # Multiple pairs format:
-  hic_pairs:
-    - r1: "/path/to/library1_R1.fastq.gz"
-      r2: "/path/to/library1_R2.fastq.gz"
-    - r1: "/path/to/library2_R1.fastq.gz"
-      r2: "/path/to/library2_R2.fastq.gz"
-    # Add more pairs as needed
+  contigs: "/home/petr/PycharmProjects/yahs_pipeline/test_data/dm3.fasta"           # Assembly contigs FASTA file
+  hic_r1: "/home/petr/PycharmProjects/yahs_pipeline/test_data/HiC_S2_1p_10min_lowU_R1.fastq.gz"      # Hi-C reads forward
+  hic_r2: "/home/petr/PycharmProjects/yahs_pipeline/test_data/HiC_S2_1p_10min_lowU_R2.fastq.gz"      # Hi-C reads reverse
 
 # Output configuration
 output:
-  directory: "/path/to/output"             # Output directory
+  directory: "/home/petr/PycharmProjects/yahs_pipeline/tmp"             # Output directory
   prefix: "scaffolded"                     # Output files prefix
 
 # Workflow parameters
 parameters:
-  threads: 16                              # Number of threads for BWA alignment
+  threads: 6                              # Number of threads for BWA alignment
   java_memory: "32G"                       # Memory for Java applications
-  sort_memory: "32G"                       # Memory for sorting during contact map generation
 
-  # Duplicate marking method: 'biobambam2', 'picard', or 'sambamba'
+  # Duplicate marking method: 'biobambam2' or 'picard'
   dedup_method: "biobambam2"
 
   # Generate BED file from BAM (optional)
@@ -49,22 +37,22 @@ parameters:
     # agp_file: "/path/to/existing.agp"
 
     # Skip error correction rounds
-    no_contig_ec: false
-    no_scaffold_ec: false
+    no_contig_ec: true
+    no_scaffold_ec: true
 
     # Restriction enzyme motifs (e.g., "GATC,GANTC")
     # enzyme_motifs: "GATC"
 
 # Logging configuration
 logging:
-  level: "DEBUG"                           # DEBUG, INFO, WARNING, ERROR (DEBUG for troubleshooting)
+  level: "INFO"                            # DEBUG, INFO, WARNING, ERROR
   file: "yahs_workflow.log"                # Log file name
 
 # Example advanced configuration:
 # parameters:
 #   threads: 32
 #   java_memory: "64G"
-#   dedup_method: "sambamba"
+#   dedup_method: "picard"
 #   generate_bed: true
 #   generate_manual_curation: true
 #   yahs:

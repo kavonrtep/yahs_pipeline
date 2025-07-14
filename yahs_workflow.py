@@ -284,34 +284,20 @@ class YaHSWorkflow:
         self.output_prefix = output_prefix
 
     def step3_contact_maps(self):
-        """Step 3: Generate Hi-C Contact Maps"""
-        self.logger.info("=== Step 3: Generate Hi-C Contact Maps ===")
+        """Step 3: Generate Hi-C Contact Maps and Manual Curation Files"""
+        self.logger.info("=== Step 3: Generate Hi-C Contact Maps and Manual Curation Files ===")
         
-        # Check if contact maps are already generated
-        contact_map_method = self.config['parameters'].get('contact_map_method', 'both')
+        # Generate Juicer contact maps
         hic_file = self.contact_maps_dir / f"{self.config['output'].get('prefix', 'scaffolded')}.hic"
-        pretext_file = self.contact_maps_dir / f"{self.config['output'].get('prefix', 'scaffolded')}.pretext"
         
-        skip_juicer = False
-        skip_pretext = False
-        
-        if contact_map_method in ['juicer', 'both'] and os.path.exists(hic_file):
+        if os.path.exists(hic_file):
             self.logger.info("Juicer .hic file already exists, skipping Juicer generation")
-            skip_juicer = True
-            
-        if contact_map_method in ['pretext', 'both'] and os.path.exists(pretext_file):
-            self.logger.info("Pretext map already exists, skipping Pretext generation")
-            skip_pretext = True
-            
-        if skip_juicer and skip_pretext:
-            self.logger.info("All contact maps already generated, skipping step 3")
-            return
-
-        if contact_map_method in ['juicer', 'both'] and not skip_juicer:
+        else:
             self.generate_juicer_hic()
-
-        if contact_map_method in ['pretext', 'both'] and not skip_pretext:
-            self.generate_pretext_maps()
+            
+        # Generate manual curation files if requested
+        if self.config['parameters'].get('generate_manual_curation', True):
+            self.generate_manual_curation_files()
 
     def generate_juicer_hic(self):
         """Generate .hic file using Juicer Tools"""
@@ -458,29 +444,77 @@ class YaHSWorkflow:
 
         self.run_command(cmd, "Generate .hic file from BAM alignments")
 
-    def generate_pretext_maps(self):
-        """Generate Pretext maps"""
-        self.logger.info("Generating Pretext maps...")
+    def generate_manual_curation_files(self):
+        """Generate JBAT files for manual curation with Juicebox"""
+        self.logger.info("Generating manual curation files for Juicebox...")
 
-        pretext_file = self.contact_maps_dir / f"{self.config['output'].get('prefix', 'scaffolded')}.pretext"
+        # Required files for manual curation
+        bin_file = f"{self.output_prefix}.bin"
+        agp_file = f"{self.output_prefix}_scaffolds_final.agp"
+        contigs_fa = self.config['input']['contigs']
+        contigs_fai = f"{contigs_fa}.fai"
         
-        # Use the dedup BAM file directly for Pretext map generation
-        if not os.path.exists(self.hic_dedup_bam):
-            self.logger.error(f"Dedup BAM file not found: {self.hic_dedup_bam}")
-            self.logger.error("Cannot generate Pretext maps")
+        jbat_prefix = self.contact_maps_dir / f"{self.config['output'].get('prefix', 'scaffolded')}_JBAT"
+        jbat_log = f"{jbat_prefix}.log"
+        
+        # Check if JBAT files already exist
+        jbat_assembly = f"{jbat_prefix}.assembly"
+        if os.path.exists(jbat_assembly):
+            self.logger.info("JBAT files already exist, skipping manual curation file generation")
             return
+        
+        # Check if required files exist
+        if not os.path.exists(bin_file):
+            self.logger.error(f"YaHS bin file not found: {bin_file}")
+            self.logger.error("Cannot generate JBAT files without YaHS bin file")
+            return
+            
+        if not os.path.exists(agp_file):
+            self.logger.error(f"YaHS AGP file not found: {agp_file}")
+            self.logger.error("Cannot generate JBAT files without AGP file")
+            return
+            
+        if not os.path.exists(contigs_fai):
+            self.logger.info(f"Creating contig index file: {contigs_fai}")
+            cmd = f"samtools faidx {contigs_fa}"
+            self.run_command(cmd, "Create contig index file")
 
-        # Generate pretext map from BAM file
-        cmd = f"samtools view {self.hic_dedup_bam} | PretextMap -o {pretext_file}"
-
-        self.run_command(cmd, "Generate Pretext map")
-
-        # Generate snapshots
-        snapshot_dir = self.contact_maps_dir / "pretext_snapshots"
-        snapshot_dir.mkdir(exist_ok=True)
-
-        cmd = f'PretextSnapshot -m {pretext_file} --sequences "=full" -o {snapshot_dir}'
-        self.run_command(cmd, "Generate Pretext snapshots")
+        # Step 1: Generate JBAT files with juicer pre -a
+        self.logger.info("Generating JBAT files with juicer pre -a...")
+        cmd = f"juicer pre -a -o {jbat_prefix} {bin_file} {agp_file} {contigs_fai} > {jbat_log} 2>&1"
+        self.run_command(cmd, "Generate JBAT files for manual curation")
+        
+        # Step 2: Generate HiC contact map for Juicebox
+        jbat_txt = f"{jbat_prefix}.txt"
+        jbat_hic = f"{jbat_prefix}.hic"
+        jbat_hic_temp = f"{jbat_hic}.part"
+        
+        if os.path.exists(jbat_txt) and os.path.exists(jbat_log):
+            self.logger.info("Generating HiC contact map for Juicebox...")
+            memory = self.config['parameters'].get('java_memory', '32G')
+            juicer_jar = self.config['parameters'].get(
+                'juicer_tools_jar', '/usr/local/bin/juicer_tools.jar'
+            )
+            
+            # Extract chromosome sizes from log file to a temporary file
+            chrom_sizes_file = f"{jbat_prefix}.chrom.sizes"
+            cmd = f"cat {jbat_log} | grep PRE_C_SIZE | awk '{{print $2\" \"$3}}' > {chrom_sizes_file}"
+            self.run_command(cmd, "Extract chromosome sizes from JBAT log")
+            
+            # Generate HiC contact map using extracted chromosome sizes
+            cmd = f"""(java -jar -Xmx{memory} {juicer_jar} pre {jbat_txt} {jbat_hic_temp} {chrom_sizes_file}) && (mv {jbat_hic_temp} {jbat_hic})"""
+            self.run_command(cmd, "Generate HiC contact map for Juicebox")
+            
+            # Log instructions for manual curation
+            self.logger.info("Manual curation files generated successfully!")
+            self.logger.info(f"Load the following files in Juicebox for manual curation:")
+            self.logger.info(f"  - HiC file: {jbat_hic}")
+            self.logger.info(f"  - Assembly file: {jbat_assembly}")
+            self.logger.info(f"After manual curation, save the review assembly and run:")
+            self.logger.info(f"  juicer post -o {jbat_prefix} <review.assembly> {jbat_prefix}.liftover.agp {contigs_fa}")
+        else:
+            self.logger.error("Failed to generate JBAT txt or log files")
+            return
 
     def run_workflow(self):
         """Run the complete YaHS workflow"""
