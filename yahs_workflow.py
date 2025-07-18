@@ -172,73 +172,66 @@ class YaHSWorkflow:
             cmd = f"bwa index {contigs_fa}"
             self.run_command(cmd, "Create BWA index for contigs")
 
-        # Check if alignment is already completed by looking for the final merged/sorted file
-        hic_name_sorted = self.preprocessing_dir / "hic_name_sorted.bam"
-        if os.path.exists(hic_name_sorted):
-            self.logger.info("BWA alignment already completed, skipping alignment step")
+        # Check alignment method and run appropriate workflow
+        alignment_method = self.config['parameters'].get('alignment_method', 'default')
+        
+        # Check if alignment is already completed
+        if alignment_method == 'default':
+            final_output = self.preprocessing_dir / "hic_name_sorted.bam"
+            output_description = "BWA alignment"
+        else:  # omnic
+            final_output = self.preprocessing_dir / "hic_name_sorted.bam"
+            output_description = "Omni-C pairtools alignment"
+            
+        if os.path.exists(final_output):
+            self.logger.info(f"{output_description} already completed, skipping alignment step")
         else:
-            # Align Hi-C reads (potentially multiple pairs)
-            self.logger.info("Aligning Hi-C reads...")
-            
-            aligned_bams = []
-            for i, pair in enumerate(hic_pairs):
-                pair_name = f"pair_{i+1:02d}"
-                self.logger.info(f"Processing Hi-C pair {i+1}/{len(hic_pairs)}: {pair['r1']}, {pair['r2']}")
-                
-                hic_aligned = self.preprocessing_dir / f"hic_{pair_name}_aligned.bam"
-                cmd = f"""bwa mem -t {threads} {contigs_fa} {pair['r1']} {pair['r2']} | \\
-                         samtools view -bSh - | \\
-                         samtools sort -n -O BAM -o {hic_aligned}"""
-                self.run_command(cmd, f"Align Hi-C pair {i+1} with BWA and sort by name")
-                aligned_bams.append(str(hic_aligned))
-            
-            # Merge multiple BAM files if necessary
-            if len(aligned_bams) == 1:
-                # Single pair - just rename
-                cmd = f"mv {aligned_bams[0]} {hic_name_sorted}"
-                self.run_command(cmd, "Rename single aligned BAM file")
+            if alignment_method == 'default':
+                self.run_default_alignment(hic_pairs, contigs_fa, threads)
+            elif alignment_method == 'omnic':
+                self.run_omnic_alignment(hic_pairs, contigs_fa, threads)
             else:
-                # Multiple pairs - merge them
-                self.logger.info(f"Merging {len(aligned_bams)} aligned BAM files...")
-                bam_list = " ".join(aligned_bams)
-                cmd = f"samtools merge -n {hic_name_sorted} {bam_list}"
-                self.run_command(cmd, "Merge multiple Hi-C aligned BAM files")
-                
-                # Clean up individual BAM files
-                for bam in aligned_bams:
-                    cmd = f"rm {bam}"
-                    self.run_command(cmd, f"Remove temporary BAM file {bam}")
+                self.logger.error(f"Unknown alignment method: {alignment_method}. Supported methods: 'default', 'omnic'")
+                sys.exit(1)
 
-        # Mark duplicates
-        self.logger.info("Marking duplicates...")
-        hic_dedup = self.preprocessing_dir / "hic_dedup.bam"
-        dedup_method = self.config['parameters'].get('dedup_method', 'biobambam2')
-
-        if dedup_method == 'biobambam2':
-            cmd = f"bammarkduplicates2 I={hic_name_sorted} O={hic_dedup}"
-            self.run_command(cmd, "Mark duplicates with biobambam2")
-        elif dedup_method == 'picard':
-            metrics_file = self.preprocessing_dir / "metrics.txt"
-            cmd = f"""java -jar picard.jar MarkDuplicates \\
-                     I={hic_name_sorted} O={hic_dedup} M={metrics_file}"""
-            self.run_command(cmd, "Mark duplicates with Picard")
-        elif dedup_method == 'sambamba':
-            threads = self.config['parameters'].get('threads', 8)
-            cmd = (f"sambamba markdup -t {threads} --show-progress {hic_name_sorted}"
-                   f" {hic_dedup}")
-            self.run_command(cmd, "Mark duplicates with sambamba")
+        # Mark duplicates (skip for omnic as it's handled in pairtools)
+        alignment_method = self.config['parameters'].get('alignment_method', 'default')
+        if alignment_method == 'omnic':
+            self.logger.info("Duplicate marking already handled by pairtools dedup")
+            # For omnic, the final BAM is already deduplicated
+            hic_name_sorted = self.preprocessing_dir / "hic_name_sorted.bam"
+            self.hic_dedup_bam = hic_name_sorted
         else:
-            self.logger.error(f"Unknown dedup_method: {dedup_method}. Supported methods: biobambam2, picard, sambamba")
-            sys.exit(1)
+            self.logger.info("Marking duplicates...")
+            hic_name_sorted = self.preprocessing_dir / "hic_name_sorted.bam"
+            hic_dedup = self.preprocessing_dir / "hic_dedup.bam"
+            dedup_method = self.config['parameters'].get('dedup_method', 'biobambam2')
 
-        # Optional: Convert to BED
-        if self.config['parameters'].get('generate_bed', False):
-            self.logger.info("Converting BAM to BED...")
-            hic_bed = self.preprocessing_dir / "hic_dedup.bed"
-            cmd = f"bedtools bamtobed -i {hic_dedup} > {hic_bed}"
-            self.run_command(cmd, "Convert BAM to BED format")
+            if dedup_method == 'biobambam2':
+                cmd = f"bammarkduplicates2 I={hic_name_sorted} O={hic_dedup}"
+                self.run_command(cmd, "Mark duplicates with biobambam2")
+            elif dedup_method == 'picard':
+                metrics_file = self.preprocessing_dir / "metrics.txt"
+                cmd = f"""java -jar picard.jar MarkDuplicates \\
+                         I={hic_name_sorted} O={hic_dedup} M={metrics_file}"""
+                self.run_command(cmd, "Mark duplicates with Picard")
+            elif dedup_method == 'sambamba':
+                threads = self.config['parameters'].get('threads', 8)
+                cmd = (f"sambamba markdup -t {threads} --show-progress {hic_name_sorted}"
+                       f" {hic_dedup}")
+                self.run_command(cmd, "Mark duplicates with sambamba")
+            else:
+                self.logger.error(f"Unknown dedup_method: {dedup_method}. Supported methods: biobambam2, picard, sambamba")
+                sys.exit(1)
 
-        self.hic_dedup_bam = hic_dedup
+            # Optional: Convert to BED
+            if self.config['parameters'].get('generate_bed', False):
+                self.logger.info("Converting BAM to BED...")
+                hic_bed = self.preprocessing_dir / "hic_dedup.bed"
+                cmd = f"bedtools bamtobed -i {hic_dedup} > {hic_bed}"
+                self.run_command(cmd, "Convert BAM to BED format")
+
+            self.hic_dedup_bam = hic_dedup
 
     def step2_scaffolding(self):
         """Step 2: Scaffolding with YaHS"""
@@ -298,6 +291,9 @@ class YaHSWorkflow:
         # Generate manual curation files if requested
         if self.config['parameters'].get('generate_manual_curation', True):
             self.generate_manual_curation_files()
+            
+        # Generate Pretext maps (always run as final step)
+        self.generate_pretext_maps()
 
     def generate_juicer_hic(self):
         """Generate .hic file using Juicer Tools"""
@@ -515,6 +511,128 @@ class YaHSWorkflow:
         else:
             self.logger.error("Failed to generate JBAT txt or log files")
             return
+
+    def generate_pretext_maps(self):
+        """Generate Pretext maps from Hi-C BAM file"""
+        self.logger.info("Generating Pretext maps...")
+
+        pretext_file = self.contact_maps_dir / f"{self.config['output'].get('prefix', 'scaffolded')}.pretext"
+        
+        # Check if Pretext map already exists
+        if os.path.exists(pretext_file):
+            self.logger.info("Pretext map already exists, skipping Pretext generation")
+            return
+        
+        # Use the dedup BAM file for Pretext map generation
+        if not os.path.exists(self.hic_dedup_bam):
+            self.logger.error(f"Dedup BAM file not found: {self.hic_dedup_bam}")
+            self.logger.error("Cannot generate Pretext maps")
+            return
+
+        # Generate pretext map from BAM file using recommended options
+        mapq_filter = self.config['parameters'].get('mapq', 10)
+        cmd = f"samtools view -h {self.hic_dedup_bam} | PretextMap -o {pretext_file} --sortby length --mapq {mapq_filter}"
+
+        self.run_command(cmd, "Generate Pretext map")
+
+        # Log completion
+        if os.path.exists(pretext_file):
+            file_size = os.path.getsize(pretext_file)
+            self.logger.info(f"Pretext map generated successfully: {pretext_file} ({file_size} bytes)")
+            self.logger.info("Load the Pretext map in PretextView for visualization and manual curation")
+        else:
+            self.logger.error("Failed to generate Pretext map")
+
+    def run_default_alignment(self, hic_pairs, contigs_fa, threads):
+        """Run default BWA alignment workflow"""
+        self.logger.info("Running default BWA alignment workflow...")
+        
+        aligned_bams = []
+        for i, pair in enumerate(hic_pairs):
+            pair_name = f"pair_{i+1:02d}"
+            self.logger.info(f"Processing Hi-C pair {i+1}/{len(hic_pairs)}: {pair['r1']}, {pair['r2']}")
+            
+            hic_aligned = self.preprocessing_dir / f"hic_{pair_name}_aligned.bam"
+            cmd = f"""bwa mem -t {threads} {contigs_fa} {pair['r1']} {pair['r2']} | \\
+                     samtools view -bSh - | \\
+                     samtools sort -n -O BAM -o {hic_aligned}"""
+            self.run_command(cmd, f"Align Hi-C pair {i+1} with BWA and sort by name")
+            aligned_bams.append(str(hic_aligned))
+        
+        # Merge multiple BAM files if necessary
+        hic_name_sorted = self.preprocessing_dir / "hic_name_sorted.bam"
+        if len(aligned_bams) == 1:
+            # Single pair - just rename
+            cmd = f"mv {aligned_bams[0]} {hic_name_sorted}"
+            self.run_command(cmd, "Rename single aligned BAM file")
+        else:
+            # Multiple pairs - merge them
+            self.logger.info(f"Merging {len(aligned_bams)} aligned BAM files...")
+            bam_list = " ".join(aligned_bams)
+            cmd = f"samtools merge -n {hic_name_sorted} {bam_list}"
+            self.run_command(cmd, "Merge multiple Hi-C aligned BAM files")
+            
+            # Clean up individual BAM files
+            for bam in aligned_bams:
+                cmd = f"rm {bam}"
+                self.run_command(cmd, f"Remove temporary BAM file {bam}")
+
+    def run_omnic_alignment(self, hic_pairs, contigs_fa, threads):
+        """Run Omni-C pairtools alignment workflow"""
+        self.logger.info("Running Omni-C pairtools alignment workflow...")
+        
+        # Create chromosome sizes file for pairtools
+        chroms_file = self.preprocessing_dir / "chroms.genome"
+        contigs_fai = f"{contigs_fa}.fai"
+        
+        # Generate chromosome sizes file from fasta index
+        if not os.path.exists(chroms_file):
+            self.logger.info("Creating chromosome sizes file for pairtools...")
+            cmd = f"cut -f1,2 {contigs_fai} > {chroms_file}"
+            self.run_command(cmd, "Create chromosome sizes file for pairtools")
+        
+        # Process each Hi-C pair with pairtools workflow
+        processed_bams = []
+        for i, pair in enumerate(hic_pairs):
+            pair_name = f"pair_{i+1:02d}"
+            self.logger.info(f"Processing Hi-C pair {i+1}/{len(hic_pairs)} with pairtools: {pair['r1']}, {pair['r2']}")
+            
+            # Output files for this pair
+            pairs_file = self.preprocessing_dir / f"hic_{pair_name}.pairs"
+            stats_file = self.preprocessing_dir / f"hic_{pair_name}.stats.txt"
+            bam_file = self.preprocessing_dir / f"hic_{pair_name}_omnic.bam"
+            
+            # Run complete pairtools pipeline for this pair
+            cmd = f"""bwa mem -5SP -T0 -t {threads} {contigs_fa} {pair['r1']} {pair['r2']} | \\
+                     pairtools parse --min-mapq 40 --walks-policy 5unique --max-inter-align-gap 30 \\
+                     --nproc-in {threads} --nproc-out {threads} --chroms-path {chroms_file} | \\
+                     pairtools sort --tmpdir {self.preprocessing_dir} --nproc {threads} | \\
+                     pairtools dedup --mark-dups --output-stats {stats_file} | \\
+                     pairtools split --output-pairs {pairs_file} --output-sam - | \\
+                     samtools view -bS | \\
+                     samtools sort -n -O BAM -o {bam_file}"""
+            
+            self.run_command(cmd, f"Run Omni-C pairtools workflow for pair {i+1}")
+            
+            processed_bams.append(str(bam_file))
+        
+        # Merge multiple BAM files if necessary
+        hic_name_sorted = self.preprocessing_dir / "hic_name_sorted.bam"
+        if len(processed_bams) == 1:
+            # Single pair - just rename
+            cmd = f"mv {processed_bams[0]} {hic_name_sorted}"
+            self.run_command(cmd, "Rename single pairtools BAM file")
+        else:
+            # Multiple pairs - merge them
+            self.logger.info(f"Merging {len(processed_bams)} pairtools BAM files...")
+            bam_list = " ".join(processed_bams)
+            cmd = f"samtools merge -n {hic_name_sorted} {bam_list}"
+            self.run_command(cmd, "Merge multiple pairtools BAM files")
+            
+            # Clean up individual BAM files
+            for bam in processed_bams:
+                cmd = f"rm {bam}"
+                self.run_command(cmd, f"Remove temporary BAM file {bam}")
 
     def run_workflow(self):
         """Run the complete YaHS workflow"""

@@ -278,6 +278,87 @@ The pipeline automatically detects completed steps and skips them:
 
 This allows for efficient reruns if a step fails or you want to regenerate only specific outputs.
 
+## Command Reference
+
+This section provides a concise overview of all bash commands executed by the pipeline:
+
+### Step 1: Preprocessing & Mapping
+
+```bash
+# Index contigs
+samtools faidx contigs.fa
+bwa index contigs.fa
+
+# Align Hi-C reads (for each library)
+bwa mem -t {threads} contigs.fa R1.fastq.gz R2.fastq.gz | \
+  samtools view -bSh - | \
+  samtools sort -n -O BAM -o hic_aligned.bam
+
+# Merge multiple libraries (if applicable)
+samtools merge -n hic_name_sorted.bam hic_lib1.bam hic_lib2.bam ...
+
+# Mark duplicates (biobambam2, picard, or sambamba)
+bammarkduplicates2 I=hic_name_sorted.bam O=hic_dedup.bam
+# OR: java -jar picard.jar MarkDuplicates I=input.bam O=output.bam M=metrics.txt
+# OR: sambamba markdup -t {threads} input.bam output.bam
+```
+
+### Step 2: YaHS Scaffolding
+
+```bash
+# Run YaHS scaffolding with optional parameters
+yahs [-r resolution] [-e enzyme_motifs] [-a agp_file] \
+     [--no-contig-ec] [--no-scaffold-ec] \
+     -o output_prefix contigs.fa hic_dedup.bam
+```
+
+### Step 3: Contact Maps & Manual Curation
+
+```bash
+# Generate standard Juicer contact maps
+samtools faidx scaffolds_final.fa
+cut -f1,2 scaffolds_final.fa.fai > scaffolds_final.chrom.sizes
+
+# Convert YaHS bin to Juicer format
+(juicer pre scaffold.bin scaffold.agp contigs.fa.fai | \
+ sort -k2,2d -k6,6d -T ./ --parallel={threads} -S{memory} | \
+ awk 'NF' > alignments_sorted.txt.part) && \
+(mv alignments_sorted.txt.part alignments_sorted.txt)
+
+# Generate .hic file
+(java -jar -Xmx{memory} juicer_tools.jar pre \
+ alignments_sorted.txt output.hic.part scaffold.chrom.sizes) && \
+(mv output.hic.part output.hic)
+
+# Generate JBAT files for manual curation
+juicer pre -a -o JBAT_prefix scaffold.bin scaffold.agp contigs.fa.fai > JBAT.log 2>&1
+
+# Extract chromosome sizes and create Juicebox HiC file
+cat JBAT.log | grep PRE_C_SIZE | awk '{print $2" "$3}' > JBAT.chrom.sizes
+(java -jar -Xmx{memory} juicer_tools.jar pre \
+ JBAT.txt JBAT.hic.part JBAT.chrom.sizes) && \
+(mv JBAT.hic.part JBAT.hic)
+
+# Generate Pretext maps
+samtools view -h hic_dedup.bam | \
+  PretextMap -o output.pretext --sortby length --mapq {mapq_filter}
+```
+
+### Manual Curation Workflow
+
+```bash
+# After manual curation in Juicebox, apply changes
+juicer post -o JBAT_prefix review.assembly JBAT.liftover.agp contigs.fa
+```
+
+### Parameter Placeholders
+
+- `{threads}`: Number of CPU threads (default: 8)
+- `{memory}`: Java memory allocation (default: 32G)
+- `{mapq_filter}`: Mapping quality filter (default: 10)
+- `{resolution}`: YaHS resolution series (e.g., "1000,5000,10000")
+- `{enzyme_motifs}`: Restriction enzyme motifs (e.g., "GATC,GANTC")
+
 ## Citation
 
 If you use this pipeline, please cite:

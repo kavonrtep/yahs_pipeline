@@ -49,21 +49,52 @@ EOF
     wget -O /tmp/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
     bash /tmp/miniconda.sh -b -p /opt/miniconda
     rm /tmp/miniconda.sh
+    
+    # Set conda to accept Terms of Service
+    export CONDA_TOS_ACCEPT=1
 
     # Add conda to PATH and install pretext-suite from bioconda
     export PATH="/opt/miniconda/bin:$PATH"
     /opt/miniconda/bin/conda config --add channels bioconda
     /opt/miniconda/bin/conda config --add channels conda-forge
-    /opt/miniconda/bin/conda install -y pretext-suite pyyaml sambamba
+    # Accept conda Terms of Service for non-interactive installation
+    /opt/miniconda/bin/conda config --set channel_priority strict
+
+
+    # accept conda terms of service for all channels
+    /opt/miniconda/bin/conda tos accept --override-channels --channel main --channel conda-forge --channel bioconda --channel r
+
+
+    export CONDA_TOS_ACCEPT=1
+    export PATH=/opt/miniconda/bin:$PATH
+
+    /opt/miniconda/bin/conda config --add channels bioconda
+    /opt/miniconda/bin/conda config --add channels conda-forge
+    /opt/miniconda/bin/conda config --set channel_priority strict
+
+    # Explicitly accept Terms of Service:
+    conda tos accept --override-channels \
+      --channel https://repo.anaconda.com/pkgs/main \
+      --channel https://repo.anaconda.com/pkgs/r \
+      --channel bioconda \
+      --channel conda-forge
+
+
+
+
+    /opt/miniconda/bin/conda install -y python=3.12 pretext-suite pyyaml sambamba pairtools
 
     # Copy workflow script to container
     mkdir -p /opt/yahs-workflow
     chmod +x /opt/yahs-workflow/yahs_workflow.py
+    wget https://github.com/sanger-tol/PretextView/releases/download/1.0.3/PretextViewAI-1.0.3-Linux-x86_64.deb
+    dpkg -i PretextViewAI-1.0.3-Linux-x86_64.deb
 
 %environment
     export PATH=/opt/miniconda/bin:/usr/local/bin:/opt/yahs-workflow:$PATH
     export LC_ALL=C.UTF-8
     export LANG=C.UTF-8
+    export CONDA_TOS_ACCEPT=1
 
 %runscript
     if [ $# -eq 0 ]; then

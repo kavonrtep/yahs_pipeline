@@ -28,6 +28,9 @@ parameters:
   java_memory: "32G"                       # Memory for Java applications
   sort_memory: "32G"                       # Memory for sorting during contact map generation
 
+  # Alignment method: 'default' (standard BWA) or 'omnic' (Omni-C pairtools workflow)
+  alignment_method: "default"
+  
   # Duplicate marking method: 'biobambam2', 'picard', or 'sambamba'
   dedup_method: "biobambam2"
 
