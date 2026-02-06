@@ -130,13 +130,22 @@ class YaHSWorkflow:
     def step1_preprocessing(self):
         """Step 1: Preprocessing & Mapping"""
         self.logger.info("=== Step 1: Preprocessing & Mapping ===")
-        
+
+        # Determine alignment method to check for correct final output file
+        alignment_method = self.config['parameters'].get('alignment_method', 'default')
+
         # Check if preprocessing is already completed
-        hic_dedup_check = self.preprocessing_dir / "hic_dedup.bam"
-        if os.path.exists(hic_dedup_check):
+        # For omnic: final output is hic_name_sorted.bam (pairtools handles dedup)
+        # For default: final output is hic_dedup.bam
+        if alignment_method == 'omnic':
+            final_preprocessing_output = self.preprocessing_dir / "hic_name_sorted.bam"
+        else:
+            final_preprocessing_output = self.preprocessing_dir / "hic_dedup.bam"
+
+        if os.path.exists(final_preprocessing_output):
             self.logger.info("Preprocessing already completed, skipping step 1")
-            self.hic_dedup_bam = hic_dedup_check
-            
+            self.hic_dedup_bam = final_preprocessing_output
+
             # Still log information about Hi-C pairs for transparency
             input_config = self.config['input']
             if 'hic_pairs' in input_config:
@@ -202,36 +211,45 @@ class YaHSWorkflow:
             hic_name_sorted = self.preprocessing_dir / "hic_name_sorted.bam"
             self.hic_dedup_bam = hic_name_sorted
         else:
-            self.logger.info("Marking duplicates...")
             hic_name_sorted = self.preprocessing_dir / "hic_name_sorted.bam"
             hic_dedup = self.preprocessing_dir / "hic_dedup.bam"
-            dedup_method = self.config['parameters'].get('dedup_method', 'biobambam2')
 
-            if dedup_method == 'biobambam2':
-                cmd = f"bammarkduplicates2 I={hic_name_sorted} O={hic_dedup}"
-                self.run_command(cmd, "Mark duplicates with biobambam2")
-            elif dedup_method == 'picard':
-                metrics_file = self.preprocessing_dir / "metrics.txt"
-                cmd = f"""java -jar picard.jar MarkDuplicates \\
-                         I={hic_name_sorted} O={hic_dedup} M={metrics_file}"""
-                self.run_command(cmd, "Mark duplicates with Picard")
-            elif dedup_method == 'sambamba':
-                threads = self.config['parameters'].get('threads', 8)
-                cmd = (f"sambamba markdup -t {threads} --show-progress {hic_name_sorted}"
-                       f" {hic_dedup}")
-                self.run_command(cmd, "Mark duplicates with sambamba")
+            # Check if dedup already completed
+            if os.path.exists(hic_dedup):
+                self.logger.info("Duplicate marking already completed, skipping dedup")
+                self.hic_dedup_bam = hic_dedup
             else:
-                self.logger.error(f"Unknown dedup_method: {dedup_method}. Supported methods: biobambam2, picard, sambamba")
-                sys.exit(1)
+                self.logger.info("Marking duplicates...")
+                dedup_method = self.config['parameters'].get('dedup_method', 'biobambam2')
 
-            # Optional: Convert to BED
+                if dedup_method == 'biobambam2':
+                    cmd = f"bammarkduplicates2 I={hic_name_sorted} O={hic_dedup}"
+                    self.run_command(cmd, "Mark duplicates with biobambam2")
+                elif dedup_method == 'picard':
+                    metrics_file = self.preprocessing_dir / "metrics.txt"
+                    cmd = f"""java -jar picard.jar MarkDuplicates \\
+                             I={hic_name_sorted} O={hic_dedup} M={metrics_file}"""
+                    self.run_command(cmd, "Mark duplicates with Picard")
+                elif dedup_method == 'sambamba':
+                    threads = self.config['parameters'].get('threads', 8)
+                    cmd = (f"sambamba markdup -t {threads} --show-progress {hic_name_sorted}"
+                           f" {hic_dedup}")
+                    self.run_command(cmd, "Mark duplicates with sambamba")
+                else:
+                    self.logger.error(f"Unknown dedup_method: {dedup_method}. Supported methods: biobambam2, picard, sambamba")
+                    sys.exit(1)
+
+                self.hic_dedup_bam = hic_dedup
+
+            # Optional: Convert to BED (runs if dedup BAM exists, regardless of whether we just created it)
             if self.config['parameters'].get('generate_bed', False):
-                self.logger.info("Converting BAM to BED...")
                 hic_bed = self.preprocessing_dir / "hic_dedup.bed"
-                cmd = f"bedtools bamtobed -i {hic_dedup} > {hic_bed}"
-                self.run_command(cmd, "Convert BAM to BED format")
-
-            self.hic_dedup_bam = hic_dedup
+                if not os.path.exists(hic_bed):
+                    self.logger.info("Converting BAM to BED...")
+                    cmd = f"bedtools bamtobed -i {hic_dedup} > {hic_bed}"
+                    self.run_command(cmd, "Convert BAM to BED format")
+                else:
+                    self.logger.info("BED file already exists, skipping conversion")
 
     def step2_scaffolding(self):
         """Step 2: Scaffolding with YaHS"""
